@@ -1,6 +1,5 @@
-import puppeteer from 'puppeteer-core';
-import chromium from '@sparticuz/chromium';
-import fs from 'fs';
+import * as cheerio from 'cheerio';
+import axios from 'axios';
 
 // Main function to scrape and analyze any website, focusing on head tag content
 export async function analyzeWebsite(url) {
@@ -12,71 +11,51 @@ export async function analyzeWebsite(url) {
     
     console.log(`Starting head tag analysis of ${url}`);
     
-    // Configure browser for serverless environment
-    const browser = await puppeteer.launch({
-      args: chromium.args,
-      defaultViewport: chromium.defaultViewport,
-      executablePath: await chromium.executablePath(),
-      headless: chromium.headless,
+    // Fetch the webpage
+    const response = await axios.get(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+      },
+      timeout: 30000 // 30 second timeout
     });
     
-    const page = await browser.newPage();
+    // Load the HTML content
+    const $ = cheerio.load(response.data);
     
-    // Set a reasonable timeout
-    await page.setDefaultNavigationTimeout(30000);
+    // Extract head content
+    const headContent = {
+      title: $('title').text(),
+      metaTags: [],
+      linkTags: [],
+      scriptTags: []
+    };
     
-    // Navigate to the URL
-    console.log(`Navigating to ${url}`);
-    const response = await page.goto(url, { waitUntil: 'networkidle2' });
-    
-    // Check if the page loaded successfully
-    if (!response || response.status() !== 200) {
-      throw new Error(`Failed to load the page: ${response ? response.status() : 'No response'}`);
-    }
-    
-    // Extract all content from the head tag
-    const headContent = await page.evaluate(() => {
-      // Get the full HTML of the head tag
-      const headHTML = document.head.outerHTML;
-      
-      // Get all meta tags
-      const metaTags = Array.from(document.head.querySelectorAll('meta')).map(meta => {
-        const attributes = {};
-        Array.from(meta.attributes).forEach(attr => {
-          attributes[attr.name] = attr.value;
-        });
-        return attributes;
+    // Get all meta tags
+    $('meta').each((_, element) => {
+      const attributes = {};
+      Object.entries(element.attribs || {}).forEach(([key, value]) => {
+        attributes[key] = value;
       });
-      
-      // Get the title
-      const title = document.title;
-      
-      // Get all link tags (for stylesheets, favicons, etc.)
-      const linkTags = Array.from(document.head.querySelectorAll('link')).map(link => {
-        const attributes = {};
-        Array.from(link.attributes).forEach(attr => {
-          attributes[attr.name] = attr.value;
-        });
-        return attributes;
+      headContent.metaTags.push(attributes);
+    });
+    
+    // Get all link tags
+    $('link').each((_, element) => {
+      const attributes = {};
+      Object.entries(element.attribs || {}).forEach(([key, value]) => {
+        attributes[key] = value;
       });
-      
-      // Get all script tags in head
-      const scriptTags = Array.from(document.head.querySelectorAll('script')).map(script => {
-        return {
-          type: script.type,
-          src: script.src,
-          async: script.async,
-          defer: script.defer
-        };
+      headContent.linkTags.push(attributes);
+    });
+    
+    // Get all script tags in head
+    $('head script').each((_, element) => {
+      headContent.scriptTags.push({
+        type: element.attribs.type || '',
+        src: element.attribs.src || '',
+        async: 'async' in element.attribs,
+        defer: 'defer' in element.attribs
       });
-      
-      return {
-        title,
-        headHTML,
-        metaTags,
-        linkTags,
-        scriptTags
-      };
     });
     
     // Extract specific metadata that's commonly used
@@ -136,10 +115,9 @@ export async function analyzeWebsite(url) {
       }
     };
     
-    await browser.close();
     console.log(`Head analysis of ${url} completed successfully`);
-    
     return analysisData;
+    
   } catch (error) {
     console.error(`Error analyzing ${url}:`, error);
     return {
