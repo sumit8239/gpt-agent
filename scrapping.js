@@ -1,11 +1,9 @@
-import chromium from 'chrome-aws-lambda';
 import puppeteer from 'puppeteer-core';
+import chromium from '@sparticuz/chromium';
 import fs from 'fs';
 
 // Main function to scrape and analyze any website, focusing on head tag content
 export async function analyzeWebsite(url) {
-  let browser = null;
-  
   try {
     // Normalize URL format
     if (!url.startsWith('http://') && !url.startsWith('https://')) {
@@ -14,13 +12,12 @@ export async function analyzeWebsite(url) {
     
     console.log(`Starting head tag analysis of ${url}`);
     
-    // Launch browser using chrome-aws-lambda
-    browser = await puppeteer.launch({
+    // Configure browser for serverless environment
+    const browser = await puppeteer.launch({
       args: chromium.args,
       defaultViewport: chromium.defaultViewport,
-      executablePath: await chromium.executablePath,
-      headless: true,
-      ignoreHTTPSErrors: true,
+      executablePath: await chromium.executablePath(),
+      headless: chromium.headless,
     });
     
     const page = await browser.newPage();
