@@ -5,6 +5,27 @@ import { getMessages, addMessage, clearSession, getTaskType } from './chatSessio
 import { v4 as uuidv4 } from 'uuid';
 
 const app = express();
+
+// Add security headers middleware
+app.use((req, res, next) => {
+  // Set Referrer Policy
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  
+  // Add other security headers
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-XSS-Protection', '1; mode=block');
+  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  
+  // Handle CORS
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  
+  next();
+});
+
+// Parse JSON bodies
 app.use(express.json());
 
 const PORT = 3000;
