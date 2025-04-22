@@ -3,28 +3,8 @@ import openai from './openaiClient.js';
 import { analyzeWebsite } from './scrapping.js';
 import { getMessages, addMessage, clearSession, getTaskType } from './chatSession.js';
 import { v4 as uuidv4 } from 'uuid';
-import cors from 'cors';
 
 const app = express();
-
-// Configure CORS
-app.use(cors({
-  origin: '*', // You can restrict this to specific domains in production
-  methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true
-}));
-
-// Security headers
-app.use((req, res, next) => {
-  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
-  res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('X-Frame-Options', 'DENY');
-  res.setHeader('X-XSS-Protection', '1; mode=block');
-  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
-  next();
-});
-
 app.use(express.json());
 
 const PORT = 3000;
