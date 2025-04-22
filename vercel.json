@@ -1,19 +1,26 @@
 {
   "version": 2,
-  "builds": [
-    {
-      "src": "*.js",
-      "use": "@vercel/node",
-      "config": {
-        "memory": 3008,
-        "maxDuration": 60
-      }
+  "functions": {
+    "api/*.js": {
+      "memory": 3008,
+      "maxDuration": 300
     }
-  ],
+  },
   "routes": [
     {
+      "src": "/chat",
+      "dest": "/index.js",
+      "methods": ["GET", "POST", "OPTIONS"],
+      "headers": {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization",
+        "Referrer-Policy": "strict-origin-when-cross-origin"
+      }
+    },
+    {
       "src": "/(.*)",
-      "dest": "/"
+      "dest": "/index.js"
     }
   ]
 } 

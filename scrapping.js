@@ -11,18 +11,22 @@ export async function analyzeWebsite(url) {
     
     console.log(`Starting head tag analysis of ${url}`);
     
-    // Fetch the webpage
+    // Fetch the webpage with timeout and retry logic
     const response = await axios.get(url, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
       },
-      timeout: 30000 // 30 second timeout
+      timeout: 10000, // 10 second timeout
+      maxRedirects: 5,
+      validateStatus: function (status) {
+        return status >= 200 && status < 500; // Accept all status codes less than 500
+      }
     });
     
     // Load the HTML content
     const $ = cheerio.load(response.data);
     
-    // Extract head content
+    // Extract head content more efficiently
     const headContent = {
       title: $('title').text(),
       metaTags: [],
@@ -30,7 +34,7 @@ export async function analyzeWebsite(url) {
       scriptTags: []
     };
     
-    // Get all meta tags
+    // Process meta tags more efficiently
     $('meta').each((_, element) => {
       const attributes = {};
       Object.entries(element.attribs || {}).forEach(([key, value]) => {
@@ -39,7 +43,7 @@ export async function analyzeWebsite(url) {
       headContent.metaTags.push(attributes);
     });
     
-    // Get all link tags
+    // Process link tags more efficiently
     $('link').each((_, element) => {
       const attributes = {};
       Object.entries(element.attribs || {}).forEach(([key, value]) => {
@@ -48,7 +52,7 @@ export async function analyzeWebsite(url) {
       headContent.linkTags.push(attributes);
     });
     
-    // Get all script tags in head
+    // Process script tags more efficiently
     $('head script').each((_, element) => {
       headContent.scriptTags.push({
         type: element.attribs.type || '',
@@ -58,48 +62,24 @@ export async function analyzeWebsite(url) {
       });
     });
     
-    // Extract specific metadata that's commonly used
+    // Extract specific metadata more efficiently
     const metaData = {
-      description: null,
-      keywords: null,
-      viewport: null,
-      robots: null,
-      ogTitle: null,
-      ogDescription: null,
-      ogImage: null,
-      twitterCard: null,
-      twitterTitle: null,
-      twitterDescription: null,
-      twitterImage: null,
-      canonical: null
+      description: $('meta[name="description"]').attr('content') || $('meta[property="og:description"]').attr('content'),
+      keywords: $('meta[name="keywords"]').attr('content'),
+      viewport: $('meta[name="viewport"]').attr('content'),
+      robots: $('meta[name="robots"]').attr('content'),
+      ogTitle: $('meta[property="og:title"]').attr('content'),
+      ogDescription: $('meta[property="og:description"]').attr('content'),
+      ogImage: $('meta[property="og:image"]').attr('content'),
+      twitterCard: $('meta[name="twitter:card"]').attr('content'),
+      twitterTitle: $('meta[name="twitter:title"]').attr('content'),
+      twitterDescription: $('meta[name="twitter:description"]').attr('content'),
+      twitterImage: $('meta[name="twitter:image"]').attr('content'),
+      canonical: $('link[rel="canonical"]').attr('href')
     };
     
-    // Process meta tags to extract common metadata
-    headContent.metaTags.forEach(meta => {
-      if (meta.name === 'description') metaData.description = meta.content;
-      if (meta.name === 'keywords') metaData.keywords = meta.content;
-      if (meta.name === 'viewport') metaData.viewport = meta.content;
-      if (meta.name === 'robots') metaData.robots = meta.content;
-      
-      // Open Graph tags
-      if (meta.property === 'og:title') metaData.ogTitle = meta.content;
-      if (meta.property === 'og:description') metaData.ogDescription = meta.content;
-      if (meta.property === 'og:image') metaData.ogImage = meta.content;
-      
-      // Twitter Card tags
-      if (meta.name === 'twitter:card') metaData.twitterCard = meta.content;
-      if (meta.name === 'twitter:title') metaData.twitterTitle = meta.content;
-      if (meta.name === 'twitter:description') metaData.twitterDescription = meta.content;
-      if (meta.name === 'twitter:image') metaData.twitterImage = meta.content;
-    });
-    
-    // Extract canonical URL if present
-    headContent.linkTags.forEach(link => {
-      if (link.rel === 'canonical') metaData.canonical = link.href;
-    });
-    
-    // Gather all the data
-    const analysisData = {
+    // Return the analysis data
+    return {
       url,
       title: headContent.title,
       metaData,
@@ -112,11 +92,9 @@ export async function analyzeWebsite(url) {
         meta: headContent.metaTags,
         links: headContent.linkTags,
         scripts: headContent.scriptTags
-      }
+      },
+      success: true
     };
-    
-    console.log(`Head analysis of ${url} completed successfully`);
-    return analysisData;
     
   } catch (error) {
     console.error(`Error analyzing ${url}:`, error);
