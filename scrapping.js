@@ -11,22 +11,22 @@ export async function analyzeWebsite(url) {
     
     console.log(`Starting head tag analysis of ${url}`);
     
-    // Fetch the webpage with timeout and retry logic
+    // Fetch the webpage with shorter timeout
     const response = await axios.get(url, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
       },
-      timeout: 10000, // 10 second timeout
-      maxRedirects: 5,
+      timeout: 5000, // 5 second timeout
+      maxRedirects: 3,
       validateStatus: function (status) {
-        return status >= 200 && status < 500; // Accept all status codes less than 500
+        return status >= 200 && status < 500;
       }
     });
     
     // Load the HTML content
     const $ = cheerio.load(response.data);
     
-    // Extract head content more efficiently
+    // Extract only essential head content
     const headContent = {
       title: $('title').text(),
       metaTags: [],
@@ -34,8 +34,8 @@ export async function analyzeWebsite(url) {
       scriptTags: []
     };
     
-    // Process meta tags more efficiently
-    $('meta').each((_, element) => {
+    // Process only essential meta tags
+    $('meta[name="description"], meta[name="keywords"], meta[name="viewport"], meta[name="robots"], meta[property^="og:"], meta[name^="twitter:"]').each((_, element) => {
       const attributes = {};
       Object.entries(element.attribs || {}).forEach(([key, value]) => {
         attributes[key] = value;
@@ -43,8 +43,8 @@ export async function analyzeWebsite(url) {
       headContent.metaTags.push(attributes);
     });
     
-    // Process link tags more efficiently
-    $('link').each((_, element) => {
+    // Process only essential link tags
+    $('link[rel="canonical"], link[rel="stylesheet"]').each((_, element) => {
       const attributes = {};
       Object.entries(element.attribs || {}).forEach(([key, value]) => {
         attributes[key] = value;
@@ -52,10 +52,9 @@ export async function analyzeWebsite(url) {
       headContent.linkTags.push(attributes);
     });
     
-    // Process script tags more efficiently
-    $('head script').each((_, element) => {
+    // Process only essential script tags
+    $('head script[src]').each((_, element) => {
       headContent.scriptTags.push({
-        type: element.attribs.type || '',
         src: element.attribs.src || '',
         async: 'async' in element.attribs,
         defer: 'defer' in element.attribs
@@ -78,7 +77,7 @@ export async function analyzeWebsite(url) {
       canonical: $('link[rel="canonical"]').attr('href')
     };
     
-    // Return the analysis data
+    // Return only essential data
     return {
       url,
       title: headContent.title,
@@ -87,11 +86,6 @@ export async function analyzeWebsite(url) {
         metaTagCount: headContent.metaTags.length,
         linkTagCount: headContent.linkTags.length,
         scriptTagCount: headContent.scriptTags.length
-      },
-      headTags: {
-        meta: headContent.metaTags,
-        links: headContent.linkTags,
-        scripts: headContent.scriptTags
       },
       success: true
     };
