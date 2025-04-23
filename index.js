@@ -203,7 +203,15 @@ async function webSearch(query) {
 
 // Helper function to get temporary directory
 function getTempDirectory() {
-  return process.env.VERCEL === '1' ? '/tmp' : path.join(process.cwd(), 'scraped_data');
+  // Detect Vercel environment - look for multiple possible environment variables
+  const isVercel = process.env.VERCEL === '1' || 
+                  process.env.VERCEL === 'true' || 
+                  process.env.NOW_REGION || 
+                  process.env.VERCEL_REGION ||
+                  process.cwd().includes('/var/task');
+  
+  // Use /tmp for Vercel (serverless) environments
+  return isVercel ? '/tmp' : path.join(process.cwd(), 'scraped_data');
 }
 
 // Function to analyze SEO issues
@@ -301,7 +309,7 @@ Please provide specific, actionable tasks in the following format as a JSON obje
 // Function to clean up files in the scraped_data directory
 async function cleanScrapedDataDirectory() {
   try {
-    const scrapedDataDir = path.join(process.cwd(), 'scraped_data');
+    const scrapedDataDir = getTempDirectory();
     console.log(`\n=== Starting cleanup process ===`);
     console.log(`Target directory: ${scrapedDataDir}`);
     
@@ -344,6 +352,14 @@ async function cleanScrapedDataDirectory() {
       console.log(`Cleanup completed in ${scrapedDataDir}`);
     } else {
       console.log(`⚠️ Directory ${scrapedDataDir} does not exist`);
+      
+      // Try to create the directory if it doesn't exist
+      try {
+        fs.mkdirSync(scrapedDataDir, { recursive: true });
+        console.log(`✅ Created directory: ${scrapedDataDir}`);
+      } catch (createError) {
+        console.error(`❌ Failed to create directory ${scrapedDataDir}:`, createError.message);
+      }
     }
   } catch (error) {
     console.error('❌ Error during cleanup:', error);

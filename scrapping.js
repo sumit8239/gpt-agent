@@ -3,6 +3,19 @@ import axios from 'axios';
 import fs from 'fs';
 import path from 'path';
 
+// Function to get temporary directory
+function getTempDirectory() {
+  // Detect Vercel environment - look for multiple possible environment variables
+  const isVercel = process.env.VERCEL === '1' || 
+                  process.env.VERCEL === 'true' || 
+                  process.env.NOW_REGION || 
+                  process.env.VERCEL_REGION ||
+                  process.cwd().includes('/var/task');
+  
+  // Use /tmp for Vercel (serverless) environments
+  return isVercel ? '/tmp' : path.join(process.cwd(), 'scraped_data');
+}
+
 // Main function to scrape and analyze any website, focusing on head tag content
 export async function analyzeWebsite(url) {
   try {
@@ -14,7 +27,7 @@ export async function analyzeWebsite(url) {
     console.log(`Starting analysis of ${url}`);
     
     // Create directory if it doesn't exist
-    const scrapedDataDir = path.join(process.cwd(), 'scraped_data');
+    const scrapedDataDir = getTempDirectory();
     console.log(`Creating/checking directory: ${scrapedDataDir}`);
     if (!fs.existsSync(scrapedDataDir)) {
       fs.mkdirSync(scrapedDataDir, { recursive: true });
@@ -211,11 +224,6 @@ export async function analyzeWebsite(url) {
       headTags: {}
     };
   }
-}
-
-// Helper function to check if running on Vercel
-function isVercelProduction() {
-  return process.env.VERCEL === '1';
 }
 
 // Function to run as standalone script
