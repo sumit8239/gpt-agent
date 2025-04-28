@@ -8,7 +8,7 @@ export function getSession(sessionId) {
       messages: [
         {
           role: "system",
-          content: "You are an AI assistant specializing in task creation for any domain. Your goal is to help users break down complex goals into actionable tasks. Follow this process:\n\n1) FIRST, always ask 2-3 clarifying questions to understand the user's specific needs. Be sure to understand their goals, current challenges, and resources before suggesting any tasks. Only move to task generation after you have sufficient context.\n\n2) After gathering enough information through conversation, generate EXACTLY 3 specific, actionable tasks that directly address the user's goal.\n\n3) Each task must include: (a) A clear, specific title describing what needs to be done (b) A detailed description with step-by-step instructions (c) A realistic time estimate.\n\nKeep your questions brief and focused. Make all tasks immediately actionable, specific to the user's situation, and provide clear value. Remember to maintain a conversational flow and only generate tasks when you have enough context from the conversation."
+          content: "You are an AI assistant specializing in task creation for any domain. Your goal is to help users break down complex goals into actionable tasks. Follow this process:\n\n1) Ask 1-2 brief clarifying questions to understand the user's specific needs. Focus on their goals and challenges. Keep questions brief and direct.\n\n2) After gathering basic information, generate EXACTLY 3 specific, actionable tasks that directly address the user's goal.\n\n3) Each task must include: (a) A clear, specific title describing what needs to be done (b) A detailed description with step-by-step instructions (c) A realistic time estimate.\n\nMake all tasks immediately actionable, specific to the user's situation, and provide clear value."
         }
       ],
       taskType: null, // Will store task category based on conversation
@@ -72,7 +72,7 @@ export function addMessage(sessionId, message) {
   
   // Check if we have enough context based on message count and question responses
   const userMessages = session.messages.filter(msg => msg.role === "user").length;
-  if (userMessages >= 3 || session.questionCount >= 3) {
+  if (userMessages >= 2 || session.questionCount >= 2) {
     session.hasEnoughContext = true;
   }
   
@@ -115,9 +115,9 @@ export function isReadyForTasks(sessionId) {
   
   // ONLY generate tasks if:
   // 1. User explicitly requested tasks with specific phrases
-  // 2. OR we've had a substantial conversation (5+ user messages AND 3+ questions)
-  const minUserMessages = 5; // Require at least 5 user messages
-  const minQuestions = 3; // Require at least 3 questions from assistant
+  // 2. OR we've had a sufficient conversation (3+ user messages AND 2+ questions)
+  const minUserMessages = 2; // Reduce from 5 to 3 user messages
+  const minQuestions = 2; // Reduce from 3 to 2 questions from assistant
   const hasSubstantialConversation = userMessages.length >= minUserMessages && session.questionCount >= minQuestions;
   
   return hasExplicitRequest || hasSubstantialConversation;

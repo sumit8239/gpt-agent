@@ -33,7 +33,9 @@ function extractTasksFromReply(reply) {
   const taskPatterns = [
     /(?:#{1,3}\s*)?Task\s*(\d+)[:\)]/gi,
     /(\d+)[:.]\s*([A-Z][^.]*(?:\.|$))/g,
-    /(?:#{1,3}\s*)?(\d+)[:.]\s*([A-Z][^.]*(?:\.|$))/g
+    /(?:#{1,3}\s*)?(\d+)[:.]\s*([A-Z][^.]*(?:\.|$))/g,
+    /###\s*Task:?\s*(.*?)(?=###|$)/gis,  // New pattern for ### Task format
+    /\*\*Title:\*\*\s*(.*?)(?=\*\*|\n|$)/gi  // New pattern for **Title:** format
   ];
 
   let hasTaskIndicators = false;
@@ -46,8 +48,19 @@ function extractTasksFromReply(reply) {
 
   if (!hasTaskIndicators) return null;
 
-  // Check for sections with "Task" headers
-  const taskSections = reply.split(/(?:#{1,3}\s*)?Task\s*\d+[:\)]/i).slice(1);
+  // Check for sections with "Task" headers (including ### Task: format)
+  const taskSectionPatterns = [
+    /(?:#{1,3}\s*)?Task\s*\d+[:\)]/i,
+    /###\s*Task:?\s*/i  // New pattern for ### Task format
+  ];
+  
+  let taskSections = [];
+  for (const pattern of taskSectionPatterns) {
+    if (pattern.test(reply)) {
+      taskSections = reply.split(pattern).slice(1);
+      if (taskSections.length > 0) break;
+    }
+  }
 
   if (taskSections.length > 0) {
     const tasks = [];
@@ -59,16 +72,26 @@ function extractTasksFromReply(reply) {
       let description = section;
       let timeEstimate = '1 hour'; // Default
 
-      const titleMatch = section.match(/(?:\*\*([^*]+)\*\*|([^.:\n]+))/);
-      if (titleMatch) {
-        title = (titleMatch[1] || titleMatch[2]).trim();
-        description = description.replace(titleMatch[0], '').trim();
+      // Look for title formats including bold format
+      const titlePatterns = [
+        /(?:\*\*)?(?:Title:|Task:)(?:\*\*)?\s*([^*\n]+)/i,
+        /(?:\*\*([^*]+)\*\*|([^.:\n]+))/
+      ];
+      
+      for (const pattern of titlePatterns) {
+        const titleMatch = section.match(pattern);
+        if (titleMatch) {
+          title = (titleMatch[1] || titleMatch[2]).trim();
+          description = description.replace(titleMatch[0], '').trim();
+          break;
+        }
       }
 
+      // Look for time estimate formats
       const timePatterns = [
-        /Time\s*Estimate\s*:\s*([^.\n]+)/i,
-        /Estimated\s*Time\s*:\s*([^.\n]+)/i,
-        /Duration\s*:\s*([^.\n]+)/i,
+        /(?:\*\*)?Time\s*Estimate(?:\*\*)?(?::|is)?\s*([^.\n]+)/i,
+        /(?:\*\*)?Estimated\s*Time(?:\*\*)?(?::|is)?\s*([^.\n]+)/i,
+        /(?:\*\*)?Duration(?:\*\*)?(?::|is)?\s*([^.\n]+)/i,
         /Takes\s*about\s*([^.\n]+)/i
       ];
 
@@ -81,11 +104,13 @@ function extractTasksFromReply(reply) {
         }
       }
 
+      // Clean up description
       description = description
         .replace(/\*\*/g, '')
         .replace(/\n{3,}/g, '\n\n')
         .trim();
 
+      // Ensure we have a valid title
       if (!title || title.length > 50) {
         title = `Task ${i + 1}`;
       }
@@ -94,6 +119,22 @@ function extractTasksFromReply(reply) {
     }
 
     return tasks.length > 0 ? tasks : null;
+  }
+
+  // Check for description section with **Description:** format
+  const descriptionMatch = reply.match(/\*\*Description:\*\*\s*([\s\S]*?)(?=\*\*Time|\*\*Estimated|$)/i);
+  if (descriptionMatch) {
+    const titleMatch = reply.match(/\*\*Title:\*\*\s*([^*\n]+)/i);
+    const timeMatch = reply.match(/\*\*Time\s*Estimate:\*\*\s*([^*\n]+)/i) || 
+                      reply.match(/\*\*Estimated\s*Time:\*\*\s*([^*\n]+)/i);
+    
+    if (titleMatch) {
+      return [{
+        title: titleMatch[1].trim(),
+        description: descriptionMatch[1].trim(),
+        timeEstimate: timeMatch ? timeMatch[1].trim() : '1 hour'
+      }];
+    }
   }
 
   // If no task sections found, look for numbered lists
@@ -607,10 +648,10 @@ async function processMessage(sessionId) {
       ? [...messages, { role: "system", content: additionalInfo }]
       : messages;
 
-    // Modified question guidance to force asking questions
+    // Modified question guidance to force asking questions (but limit them)
     const questionGuidance = {
       role: "system",
-      content: "The user is seeking help with task creation. You MUST continue asking questions to understand their needs. Do not generate tasks yet - this is still the information gathering phase. Ask specifically about: 1) Their goals and desired outcomes, 2) Current challenges or pain points, 3) Resources or tools they already have, 4) Previous attempts or approaches they've tried. Ask just one question at a time. Your response should ALWAYS end with a question."
+      content: "The user is seeking help with task creation. Ask 1-2 specific, focused questions to understand their needs better. Keep your questions concise. Focus on: 1) Their specific goals and challenges, 2) Their current resources or constraints. After you have this basic information, you should be ready to provide tasks. Don't ask more than 2-3 questions total."
     };
 
     const chatCompletion = await openai.chat.completions.create({
@@ -679,7 +720,7 @@ async function processMessage(sessionId) {
           model: "gpt-4o-mini",
           messages: [...getMessages(sessionId), {
             role: "system",
-            content: "Before generating any tasks, you must ask more questions to understand the user's needs. End your response with a question."
+            content: "Ask just one focused question to understand the user's needs. Don't ask more than 2-3 questions in total during the conversation before providing tasks."
           }]
         });
 
@@ -797,7 +838,7 @@ async function processMessage(sessionId) {
   } else {
     messagesWithFormat.push({
       role: "system",
-      content: "Based on our conversation, generate EXACTLY 3 specific, actionable tasks. Each task must:\n\n1. Have a clear title that describes a specific action\n2. Include a detailed, step-by-step description of how to implement the solution\n3. Include a realistic time estimate\n\nYour response must be a valid JSON object with a single 'tasks' property containing an array of 3 task objects. Each task MUST have: 'title', 'description', and 'timeEstimate'. Format example: {\"tasks\":[{\"title\":\"Task 1\",\"description\":\"Description 1\",\"timeEstimate\":\"2 hours\"},{\"title\":\"Task 2\",\"description\":\"Description 2\",\"timeEstimate\":\"3 hours\"},{\"title\":\"Task 3\",\"description\":\"Description 3\",\"timeEstimate\":\"1 hour\"}]}"
+      content: "You are an AI assistant specializing in task creation for any domain. Your goal is to help users break down complex goals into actionable tasks. Follow this process:\n\n1) If the user's request is clear and specific enough to generate tasks (contains a goal, problem, or specific need), generate EXACTLY 3 specific, actionable tasks immediately.\n\n2) If the request is too vague or missing critical information, ask ONLY ONE clarifying question to get the essential information needed for task generation.\n\n3) Each task must include:\n   - A clear, specific title describing what needs to be done\n   - A detailed description with step-by-step instructions\n   - A realistic time estimate\n\n4) Return tasks in this exact JSON format:\n{\n  \"tasks\": [\n    {\n      \"title\": \"Task Title\",\n      \"description\": \"Step-by-step description\",\n      \"timeEstimate\": \"X hours\"\n    }\n  ]\n}\n\nDO NOT include any explanatory text outside the JSON structure. DO NOT use markdown formatting. DO NOT ask multiple questions - if you need clarification, ask only ONE essential question."
     });
   }
 
@@ -809,7 +850,7 @@ async function processMessage(sessionId) {
       model: "gpt-4o-mini",
       messages: [...messagesWithFormat, {
         role: "system",
-        content: "Make sure to format your response as a valid JSON object as specified in the instructions."
+        content: "Generate EXACTLY 3 specific, actionable tasks based on the user's request. Each task must:\n\n1. Have a clear title that describes a specific action\n2. Include a detailed, step-by-step description\n3. Include a realistic time estimate\n\nReturn ONLY a JSON object with this exact structure:\n{\n  \"tasks\": [\n    {\n      \"title\": \"Task Title\",\n      \"description\": \"Step-by-step description\",\n      \"timeEstimate\": \"X hours\"\n    },\n    {\n      \"title\": \"Task Title\",\n      \"description\": \"Step-by-step description\",\n      \"timeEstimate\": \"X hours\"\n    },\n    {\n      \"title\": \"Task Title\",\n      \"description\": \"Step-by-step description\",\n      \"timeEstimate\": \"X hours\"\n    }\n  ]\n}\n\nDO NOT include any text outside the JSON structure. DO NOT use markdown formatting. DO NOT include explanations or conversational text."
       }],
       response_format: { type: "json_object" }
     });
@@ -823,14 +864,52 @@ async function processMessage(sessionId) {
     const responseMessage = chatCompletion.choices[0].message;
     let content = responseMessage.content?.trim() || "{}";
 
+    // Validate and clean the response
     try {
-      JSON.parse(content);
-    } catch (parseError) {
-      console.log("Received malformed JSON, attempting to fix");
-      content = content.replace(/```json|```/g, '').trim();
-      if (content.startsWith('[') && content.endsWith(']')) {
-        content = `{"tasks": ${content}}`;
+      // Remove any markdown formatting
+      content = content.replace(/\*\*/g, '')
+                      .replace(/#{1,3}\s*/g, '')
+                      .replace(/```json|```/g, '')
+                      .trim();
+
+      // Parse the JSON
+      const parsedData = JSON.parse(content);
+
+      // Validate the structure
+      if (!parsedData.tasks || !Array.isArray(parsedData.tasks)) {
+        throw new Error("Invalid task structure");
       }
+
+      // Clean and validate each task
+      parsedData.tasks = parsedData.tasks.map(task => {
+        if (!task.title || !task.description || !task.timeEstimate) {
+          throw new Error("Missing required task fields");
+        }
+        return {
+          title: task.title.replace(/\*\*/g, '').trim(),
+          description: task.description.replace(/\*\*/g, '').trim(),
+          timeEstimate: task.timeEstimate.replace(/\*\*/g, '').trim()
+        };
+      });
+
+      // Ensure we have exactly 3 tasks
+      if (parsedData.tasks.length !== 3) {
+        throw new Error("Must have exactly 3 tasks");
+      }
+
+      content = JSON.stringify(parsedData);
+    } catch (error) {
+      console.error("Error validating response:", error);
+      // Return a fallback response with proper structure
+      content = JSON.stringify({
+        tasks: [
+          {
+            title: "Error in task generation",
+            description: "Please try again with a more specific request.",
+            timeEstimate: "0 hours"
+          }
+        ]
+      });
     }
 
     addMessage(sessionId, {
@@ -1084,6 +1163,33 @@ function convertTasksToReply(tasks) {
 async function ensureTasksInTasksArray(response) {
   if (!response) return null;
   
+  // First, check for and extract tasks from reply if the tasks array is empty
+  if ((!response.tasks || response.tasks.length === 0) && response.reply) {
+    console.log("Tasks array is empty, checking reply for task content");
+    const extractedTasks = extractTasksFromReply(response.reply);
+    
+    if (extractedTasks && extractedTasks.length > 0) {
+      console.log(`Found ${extractedTasks.length} tasks in the reply text`);
+      
+      // Check if these are actually questions rather than tasks
+      if (detectQuestionsInTasks(extractedTasks)) {
+        console.log("Extracted content looks like questions, keeping in reply format");
+        return response;
+      }
+      
+      // Move tasks from reply to tasks array
+      response.tasks = extractedTasks;
+      
+      // Set a simple confirmation as the reply
+      response.reply = "I've generated the following tasks based on our conversation. Would you like me to explain any of them in more detail?";
+      
+      console.log("Successfully moved tasks from reply to tasks array");
+      // Clean up scraped_data directory after processing
+      await cleanScrapedDataDirectory();
+    }
+  }
+  
+  // If tasks exist but could contain questions, handle that case
   if (response.tasks && response.tasks.length > 0) {
     if (detectQuestionsInTasks(response.tasks)) {
       console.log("Detected questions in tasks array, converting to reply");
@@ -1098,38 +1204,17 @@ async function ensureTasksInTasksArray(response) {
     }
   }
   
-  if (response.reply) {
-    const extractedTasks = extractTasksFromReply(response.reply);
-    
-    if (extractedTasks && extractedTasks.length > 0) {
-      if (detectQuestionsInTasks(extractedTasks)) {
-        console.log("Extracted content looks like questions, keeping in reply format");
-        return response;
-      }
-      
-      console.log(`Extracted ${extractedTasks.length} tasks from reply`);
-      // Clean up scraped_data directory after tasks are extracted
-      await cleanScrapedDataDirectory();
-      
-      if (response.tasks && response.tasks.length > 0) {
-        const remainingSlots = 3 - response.tasks.length;
-        if (remainingSlots > 0) {
-          response.tasks = [...response.tasks, ...extractedTasks.slice(0, remainingSlots)];
-        }
-      } else {
-        response.tasks = extractedTasks.slice(0, 3);
-      }
-      
-      response.reply = null;
-    }
-  }
-  
+  // Ensure tasks array exists
   if (!response.tasks) {
     response.tasks = [];
   }
   
+  // If we have valid tasks, we can simplify or null out the reply
   if (response.tasks.length > 0 && !detectQuestionsInTasks(response.tasks)) {
-    response.reply = null;
+    // Only replace reply if it contains task-like content
+    if (response.reply && extractTasksFromReply(response.reply)) {
+      response.reply = "Here are the tasks I've prepared for you.";
+    }
   }
   
   return response;
