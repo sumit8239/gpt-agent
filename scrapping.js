@@ -16,6 +16,23 @@ function getTempDirectory() {
   return isVercel ? '/tmp' : path.join(process.cwd(), 'scraped_data');
 }
 
+// Generate safe filenames to prevent path length errors
+function generateSafeFilename(url, timestamp) {
+  // Extract domain from URL
+  let domain = '';
+  try {
+    const urlObj = new URL(url);
+    domain = urlObj.hostname.replace(/[^a-zA-Z0-9]/g, '_');
+  } catch (error) {
+    // If URL parsing fails, use a safe default
+    domain = 'webpage';
+  }
+  
+  // Limit the length of the filename to avoid path length issues in Windows
+  const maxLength = 50; // Keep the base filename reasonably short
+  return `${domain.substring(0, maxLength)}_${timestamp}`;
+}
+
 // Main function to scrape and analyze any website, focusing on head tag content
 export async function analyzeWebsite(url) {
   try {
@@ -36,9 +53,9 @@ export async function analyzeWebsite(url) {
 
     // Generate safe filenames
     const timestamp = Date.now();
-    const safeUrl = url.replace(/[^a-zA-Z0-9]/g, '_');
-    const htmlFilename = `${safeUrl}_${timestamp}.html`;
-    const analysisFilename = `${safeUrl}_${timestamp}_analysis.json`;
+    const safeBasename = generateSafeFilename(url, timestamp);
+    const htmlFilename = `${safeBasename}.html`;
+    const analysisFilename = `${safeBasename}_analysis.json`;
     const htmlPath = path.join(scrapedDataDir, htmlFilename);
     const analysisPath = path.join(scrapedDataDir, analysisFilename);
 
@@ -243,3 +260,150 @@ const runScraper = async () => {
 if (import.meta.url === `file://${process.argv[1]}`) {
   runScraper();
 }
+
+// Add a function to extract more general website insights, not just SEO-focused
+export async function extractWebsiteInsights(url) {
+  try {
+    console.log(`Starting general website analysis for ${url}`);
+    
+    const analysisData = await analyzeWebsite(url);
+    
+    if (analysisData.error) {
+      throw new Error(`Failed to analyze website: ${analysisData.error}`);
+    }
+
+    // Create a more general analysis focusing on various aspects
+    const websiteInsights = {
+      general: {
+        title: analysisData.title,
+        description: analysisData.metaData?.description,
+        contentStructure: {
+          headings: analysisData.bodyContent?.headings,
+          paragraphs: analysisData.bodyContent?.wordCount > 0 ? "Present" : "Limited",
+          mediaElements: analysisData.bodyContent?.images
+        }
+      },
+      userExperience: {
+        hasViewportMeta: analysisData.seoAnalysis?.hasViewport,
+        imagesWithAlt: analysisData.bodyContent?.imagesWithAlt,
+        imagesWithoutAlt: analysisData.bodyContent?.imagesWithoutAlt,
+        navigationElements: analysisData.bodyContent?.internalLinks
+      },
+      contentQuality: {
+        wordCount: analysisData.bodyContent?.wordCount,
+        headingStructure: analysisData.bodyContent?.headings?.h1 > 0 ? "Has main headings" : "Missing main headings",
+        contentSamples: analysisData.contentSamples
+      },
+      technicalAspects: {
+        scriptCount: analysisData.headStats?.scriptTagCount,
+        stylesheetCount: analysisData.headStats?.linkTagCount,
+        metaTagCount: analysisData.headStats?.metaTagCount,
+        hasSocialTags: analysisData.seoAnalysis?.hasOpenGraph || analysisData.seoAnalysis?.hasTwitterCard
+      }
+    };
+
+    return {
+      success: true,
+      insights: websiteInsights,
+      rawData: analysisData
+    };
+  } catch (error) {
+    console.error('Error in extractWebsiteInsights:', error);
+    return {
+      success: false,
+      error: error.message
+    };
+  }
+}
+
+// Function to analyze website for task generation, now more general purpose
+export async function analyzeWebsiteForTasks(url, domainFocus = "general") {
+  try {
+    console.log(`Starting ${domainFocus} analysis for ${url}`);
+    
+    const analysisData = await analyzeWebsite(url);
+    
+    if (analysisData.error) {
+      throw new Error(`Failed to analyze website: ${analysisData.error}`);
+    }
+
+    // Create a prompt that's appropriate for the domain focus
+    let analysisPrompt = `Based on the website analysis, identify specific actionable tasks:
+
+URL: ${url}
+Title: ${analysisData.title || 'Not found'}
+Description: ${analysisData.metaData?.description || 'Not found'}
+`;
+
+    // Add domain-specific analysis sections
+    if (domainFocus === "seo") {
+      analysisPrompt += `
+SEO Analysis:
+- Title Length: ${analysisData.seoAnalysis?.titleLength || 0} characters
+- Description Length: ${analysisData.seoAnalysis?.descriptionLength || 0} characters
+- Has Canonical URL: ${analysisData.seoAnalysis?.hasCanonical ? 'Yes' : 'No'}
+- Has Robots Meta: ${analysisData.seoAnalysis?.hasRobots ? 'Yes' : 'No'}
+- Has Open Graph Tags: ${analysisData.seoAnalysis?.hasOpenGraph ? 'Yes' : 'No'}
+- Has Twitter Card Tags: ${analysisData.seoAnalysis?.hasTwitterCard ? 'Yes' : 'No'}
+`;
+    } else if (domainFocus === "content") {
+      analysisPrompt += `
+Content Analysis:
+- Headings Structure: H1 (${analysisData.bodyContent?.headings?.h1 || 0}), H2 (${analysisData.bodyContent?.headings?.h2 || 0})
+- Word Count: ${analysisData.bodyContent?.wordCount || 0}
+- Content Samples: ${JSON.stringify(analysisData.contentSamples?.paragraphSamples || [])}
+`;
+    } else if (domainFocus === "ux") {
+      analysisPrompt += `
+User Experience Analysis:
+- Has Viewport Meta: ${analysisData.seoAnalysis?.hasViewport ? 'Yes' : 'No'}
+- Images: ${analysisData.bodyContent?.images || 0} (${analysisData.bodyContent?.imagesWithAlt || 0} with alt text)
+- Internal Links: ${analysisData.bodyContent?.internalLinks || 0}
+- External Links: ${analysisData.bodyContent?.externalLinks || 0}
+`;
+    } else {
+      // General website analysis
+      analysisPrompt += `
+Website Overview:
+- Headings: H1 (${analysisData.bodyContent?.headings?.h1 || 0}), H2 (${analysisData.bodyContent?.headings?.h2 || 0})
+- Images: ${analysisData.bodyContent?.images || 0} (${analysisData.bodyContent?.imagesWithAlt || 0} with alt text)
+- Links: Internal (${analysisData.bodyContent?.internalLinks || 0}), External (${analysisData.bodyContent?.externalLinks || 0})
+- Word Count: ${analysisData.bodyContent?.wordCount || 0}
+- Script Tags: ${analysisData.headStats?.scriptTagCount || 0}
+- Style Sheets: ${analysisData.headStats?.linkTagCount || 0}
+`;
+    }
+
+    analysisPrompt += `
+Please provide specific, actionable tasks in the following format:
+
+{
+  "tasks": [
+    {
+      "title": "Task Title",
+      "description": "Detailed steps to complete this task",
+      "timeEstimate": "X hours"
+    }
+  ]
+}`;
+
+    return {
+      success: true,
+      analysisPrompt,
+      rawData: analysisData
+    };
+  } catch (error) {
+    console.error('Error in analyzeWebsiteForTasks:', error);
+    return {
+      success: false,
+      error: error.message
+    };
+  }
+}
+
+// Export additional functions for other modules to use
+export default {
+  analyzeWebsite,
+  extractWebsiteInsights,
+  analyzeWebsiteForTasks
+};

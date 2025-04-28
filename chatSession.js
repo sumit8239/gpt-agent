@@ -8,10 +8,13 @@ export function getSession(sessionId) {
       messages: [
         {
           role: "system",
-          content: "You are an AI assistant specializing in task creation and website analysis. You can help with two main types of requests:\n\n1) **General Task Creation**: If the user wants help with personal productivity, business processes, or any non-website task, gather relevant information about their goals, current situation, and constraints. After sufficient context (2-3 exchanges), generate 3 specific, actionable tasks with clear titles, detailed step-by-step descriptions, and realistic time estimates.\n\n2) **Website Analysis & Improvement**: If the user mentions a website or web-related tasks (SEO, conversions, UX, marketing, etc.), focus on gathering: a) The website URL, b) Their specific goals, c) Their target audience. When a website URL is provided, use available analysis data about it. After gathering context, generate 3 specific, data-driven tasks related to their website goals.\n\nKeep your initial questions brief and direct. For all task types, ensure they are immediately actionable, specific to the user's situation, and provide clear value. Each task should include a title, description, and time estimate."
+          content: "You are an AI assistant specializing in task creation for any domain. Your goal is to help users break down complex goals into actionable tasks. Follow this process:\n\n1) FIRST, always ask 2-3 clarifying questions to understand the user's specific needs. Be sure to understand their goals, current challenges, and resources before suggesting any tasks. Only move to task generation after you have sufficient context.\n\n2) After gathering enough information through conversation, generate EXACTLY 3 specific, actionable tasks that directly address the user's goal.\n\n3) Each task must include: (a) A clear, specific title describing what needs to be done (b) A detailed description with step-by-step instructions (c) A realistic time estimate.\n\nKeep your questions brief and focused. Make all tasks immediately actionable, specific to the user's situation, and provide clear value. Remember to maintain a conversational flow and only generate tasks when you have enough context from the conversation."
         }
       ],
-      taskType: null // Will store 'general' or 'website' based on initial conversation
+      taskType: null, // Will store task category based on conversation
+      questionCount: 0, // Track how many questions have been asked
+      hasEnoughContext: false, // Flag to indicate when ready for task generation
+      tasksGenerated: false // Flag to indicate if tasks have been generated
     });
   }
   return sessions.get(sessionId);
@@ -39,16 +42,38 @@ export function addMessage(sessionId, message) {
   if (session.taskType === null && message.role === "user") {
     const content = message.content.toLowerCase();
     
-    // Check if it seems to be website-related
+    // Check for different domains to categorize the task type
     if (content.includes("website") || content.includes("seo") || 
-        content.includes("conversion") || content.includes("ux") || 
-        content.includes("marketing") || content.includes("url") ||
-        content.includes("traffic") || content.includes("landing page") ||
+        content.includes("web") || content.includes("url") ||
         /https?:\/\/[^\s]+/.test(content)) {
       session.taskType = "website";
+    } else if (content.includes("business") || content.includes("company") ||
+               content.includes("startup") || content.includes("product") ||
+               content.includes("market") || content.includes("customer")) {
+      session.taskType = "business";
+    } else if (content.includes("learn") || content.includes("study") ||
+               content.includes("education") || content.includes("course")) {
+      session.taskType = "education";
+    } else if (content.includes("personal") || content.includes("life") ||
+               content.includes("habit") || content.includes("goal")) {
+      session.taskType = "personal";
     } else {
       session.taskType = "general";
     }
+  }
+  
+  // Track assistant questions for conversational flow
+  if (message.role === "assistant" && 
+      (message.content.endsWith("?") || 
+       message.content.includes("Could you") || 
+       message.content.includes("Can you"))) {
+    session.questionCount += 1;
+  }
+  
+  // Check if we have enough context based on message count and question responses
+  const userMessages = session.messages.filter(msg => msg.role === "user").length;
+  if (userMessages >= 3 || session.questionCount >= 3) {
+    session.hasEnoughContext = true;
   }
   
   session.messages.push(validatedMessage);
@@ -63,6 +88,55 @@ export function getMessages(sessionId) {
 // Get the detected task type for a session
 export function getTaskType(sessionId) {
   return getSession(sessionId).taskType;
+}
+
+// Check if we have enough context to generate tasks
+export function isReadyForTasks(sessionId) {
+  const session = getSession(sessionId);
+  
+  // Check if user explicitly requested tasks with very specific phrases
+  const userMessages = session.messages.filter(msg => msg.role === "user");
+  const lastUserMessage = userMessages[userMessages.length - 1]?.content?.toLowerCase() || "";
+  
+  const explicitTaskRequests = [
+    "please generate tasks",
+    "generate tasks now",
+    "create tasks for me",
+    "give me the tasks",
+    "show me tasks now",
+    "i want the tasks now",
+    "finish the tasks",
+    "generate the final tasks"
+  ];
+  
+  const hasExplicitRequest = explicitTaskRequests.some(phrase => 
+    lastUserMessage.includes(phrase)
+  );
+  
+  // ONLY generate tasks if:
+  // 1. User explicitly requested tasks with specific phrases
+  // 2. OR we've had a substantial conversation (5+ user messages AND 3+ questions)
+  const minUserMessages = 5; // Require at least 5 user messages
+  const minQuestions = 3; // Require at least 3 questions from assistant
+  const hasSubstantialConversation = userMessages.length >= minUserMessages && session.questionCount >= minQuestions;
+  
+  return hasExplicitRequest || hasSubstantialConversation;
+}
+
+// Mark that tasks have been generated
+export function markTasksGenerated(sessionId) {
+  const session = getSession(sessionId);
+  session.tasksGenerated = true;
+}
+
+// Check if tasks have been generated already
+export function hasGeneratedTasks(sessionId) {
+  return getSession(sessionId).tasksGenerated === true;
+}
+
+// Reset the question counter
+export function resetQuestionCount(sessionId) {
+  getSession(sessionId).questionCount = 0;
 }
 
 // Clear a session
