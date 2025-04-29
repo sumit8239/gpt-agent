@@ -500,7 +500,39 @@ async function processMessage(sessionId) {
       lastUserMessage.includes("update") ||
       lastUserMessage.includes("different") ||
       lastUserMessage.includes("revise") ||
-      lastUserMessage.includes("adjust");
+      lastUserMessage.includes("adjust") ||
+      lastUserMessage.includes("create new task") ||
+      lastUserMessage.includes("generate new task") ||
+      lastUserMessage.includes("create task") ||
+      lastUserMessage.includes("new task") ||
+      lastUserMessage.includes("make new task") ||
+      lastUserMessage.includes("different task") ||
+      // Additional task creation scenarios
+      lastUserMessage.includes("new project") ||
+      lastUserMessage.includes("need tasks for") ||
+      lastUserMessage.includes("help me with") ||
+      lastUserMessage.includes("start over") ||
+      lastUserMessage.includes("restart") ||
+      lastUserMessage.includes("tasks about") ||
+      lastUserMessage.includes("tasks related to") ||
+      lastUserMessage.includes("plan for") ||
+      lastUserMessage.includes("help organize") ||
+      lastUserMessage.includes("i want to") ||
+      lastUserMessage.includes("different topic") ||
+      lastUserMessage.includes("new topic") ||
+      lastUserMessage.includes("instead") ||
+      lastUserMessage.includes("forget that") ||
+      lastUserMessage.includes("try something else") ||
+      lastUserMessage.includes("brainstorm tasks") ||
+      lastUserMessage.includes("create a plan") ||
+      lastUserMessage.includes("generate a plan") ||
+      lastUserMessage.includes("suggest tasks") ||
+      lastUserMessage.includes("another set") ||
+      lastUserMessage.includes("different set") ||
+      // Direct questions that likely need new tasks
+      /can you (help|make|create|give|provide)/.test(lastUserMessage) ||
+      /how (can|do|should) i/.test(lastUserMessage) ||
+      /what (should|can) i do/.test(lastUserMessage);
       
     if (isAskingForTaskChange) {
       // Process this as a request to generate new tasks based on feedback
