@@ -1,7 +1,21 @@
 import express from 'express';
 import openai from './openaiClient.js';
 import { analyzeWebsite, extractWebsiteInsights, analyzeWebsiteForTasks } from './scrapping.js';
-import { getMessages, addMessage, clearSession, getTaskType, isReadyForTasks, resetQuestionCount, markTasksGenerated, hasGeneratedTasks } from './chatSession.js';
+import { 
+  getMessages, 
+  addMessage, 
+  clearSession, 
+  getTaskType, 
+  isReadyForTasks, 
+  resetQuestionCount, 
+  markTasksGenerated, 
+  hasGeneratedTasks,
+  isTaskEditRequested,
+  getSpecificTaskToEdit,
+  clearTaskEditRequest,
+  storeWebsiteData,
+  getWebsiteData
+} from './chatSession.js';
 import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
 import fs from 'fs';
@@ -34,8 +48,8 @@ function extractTasksFromReply(reply) {
     /(?:#{1,3}\s*)?Task\s*(\d+)[:\)]/gi,
     /(\d+)[:.]\s*([A-Z][^.]*(?:\.|$))/g,
     /(?:#{1,3}\s*)?(\d+)[:.]\s*([A-Z][^.]*(?:\.|$))/g,
-    /###\s*Task:?\s*(.*?)(?=###|$)/gis,  // New pattern for ### Task format
-    /\*\*Title:\*\*\s*(.*?)(?=\*\*|\n|$)/gi  // New pattern for **Title:** format
+    /###\s*Task:?\s*(.*?)(?=###|$)/gis,
+    /\*\*Title:\*\*\s*(.*?)(?=\*\*|\n|$)/gi
   ];
 
   let hasTaskIndicators = false;
@@ -48,10 +62,10 @@ function extractTasksFromReply(reply) {
 
   if (!hasTaskIndicators) return null;
 
-  // Check for sections with "Task" headers (including ### Task: format)
+  // Check for sections with "Task" headers
   const taskSectionPatterns = [
     /(?:#{1,3}\s*)?Task\s*\d+[:\)]/i,
-    /###\s*Task:?\s*/i  // New pattern for ### Task format
+    /###\s*Task:?\s*/i
   ];
   
   let taskSections = [];
@@ -255,61 +269,6 @@ function getTempDirectory() {
   return isVercel ? '/tmp' : path.join(process.cwd(), 'scraped_data');
 }
 
-// Function to analyze SEO issues
-async function analyzeSEOIssues(url) {
-  try {
-    console.log(`Starting website analysis for ${url}`);
-    
-    // Use our new more general function instead
-    const analysisResult = await analyzeWebsiteForTasks(url, "seo");
-    
-    if (!analysisResult.success) {
-      throw new Error(`Failed to analyze website: ${analysisResult.error}`);
-    }
-
-    const gptResponse = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [
-        {
-          role: "system",
-          content: "You are an expert SEO analyst. Analyze the provided website data and create specific, actionable tasks to improve the site's SEO. Each task should address a concrete issue found in the analysis. Provide your response in JSON format."
-        },
-        {
-          role: "user",
-          content: analysisResult.analysisPrompt + "\n\nReturn your response as a JSON object."
-        }
-      ],
-      temperature: 0.7,
-      max_tokens: 1000,
-      response_format: { type: "json_object" }
-    });
-
-    let tasks = [];
-    try {
-      const parsedResponse = JSON.parse(gptResponse.choices[0].message.content);
-      if (parsedResponse.tasks && Array.isArray(parsedResponse.tasks)) {
-        tasks = parsedResponse.tasks;
-      }
-    } catch (error) {
-      console.error('Error parsing GPT response:', error);
-    }
-    
-    await cleanScrapedDataDirectory();
-    return {
-      success: true,
-      tasks: tasks,
-      rawData: analysisResult.rawData
-    };
-  } catch (error) {
-    console.error('Error in analyzeSEOIssues:', error);
-    await cleanScrapedDataDirectory();
-    return {
-      success: false,
-      error: error.message
-    };
-  }
-}
-
 // Function to clean up files in the scraped_data directory
 async function cleanScrapedDataDirectory() {
   try {
@@ -427,268 +386,147 @@ app.delete('/chat/:sessionId', (req, res) => {
   }
 });
 
-// Helper function to check if the conversation is ready for tasks
-function isConversationTaskReady(userMessages, sessionId) {
-  // First check our session tracker if we have enough context
-  if (isReadyForTasks(sessionId)) return true;
-  
-  if (!userMessages || userMessages.length === 0) return false;
-
-  const taskRequestPatterns = [
-    /help me (with|to)/i,
-    /need (help|assistance|tasks)/i,
-    /generate (some )?(tasks|steps|plan)/i,
-    /what (should|can) i do/i,
-    /give me (a|some) (task|plan|step)/i,
-    /how (can|should) i/i,
-    /improve|optimize|enhance/i,
-    /steps (to|for)/i,
-    /break down/i,
-    /create a plan/i
-  ];
-
-  const hasTaskRequest = userMessages.some(msg =>
-    taskRequestPatterns.some(pattern => pattern.test(msg.content))
-  );
-
-  // Check if the most recent message specifically asks for tasks
-  const lastMessage = userMessages[userMessages.length - 1]?.content?.toLowerCase() || "";
-  const directTaskRequest = 
-    lastMessage.includes("give me tasks") || 
-    lastMessage.includes("generate tasks") || 
-    lastMessage.includes("create tasks") ||
-    lastMessage.includes("need tasks") ||
-    lastMessage.includes("provide tasks") ||
-    lastMessage.includes("show me tasks");
-  
-  // If user explicitly asks for tasks in the latest message, they're ready
-  if (directTaskRequest) {
-    return true;
-  }
-
-  const hasMultipleMessages = userMessages.length >= 3;
-  const hasDetailedMessage = userMessages.some(msg =>
-    msg.content.split(/\s+/).length > 80
-  );
-
-  return hasMultipleMessages || 
-         (hasTaskRequest && userMessages.length >= 2) || 
-         hasDetailedMessage;
-}
-
 // Helper function to process messages with GPT
 async function processMessage(sessionId) {
   const allMessages = getMessages(sessionId);
-
-  const systemMessage = allMessages.find(msg => msg.role === "system");
-  const recentMessages = allMessages.filter(msg => msg.role !== "system").slice(-6);
-
-  const messages = systemMessage ? [systemMessage, ...recentMessages] : recentMessages;
-
   const userMessages = allMessages.filter(msg => msg.role === "user");
   const taskType = getTaskType(sessionId);
+
+  // Get system and recent messages for the API call
+  const systemMessage = allMessages.find(msg => msg.role === "system");
+  const recentMessages = allMessages.filter(msg => msg.role !== "system").slice(-6);
+  const messages = systemMessage ? [systemMessage, ...recentMessages] : recentMessages;
+
+  // Check for website URLs if we're doing website-related tasks
+  if (taskType === "website") {
+    const urlPattern = /(https?:\/\/[^\s]+)/g;
+    const mentionedUrls = [];
+    
+    userMessages.forEach(msg => {
+      const matches = msg.content.match(urlPattern);
+      if (matches) {
+        mentionedUrls.push(...matches);
+      }
+    });
+    
+    const uniqueUrls = [...new Set(mentionedUrls)];
+    
+    if (uniqueUrls.length > 0 && !getWebsiteData(sessionId)) {
+      // We have a URL but haven't analyzed it yet - do that first
+      try {
+        // Determine website analysis focus based on conversation
+        let domainFocus = "general";
+        const conversationText = userMessages.map(msg => msg.content.toLowerCase()).join(" ");
+        
+        if (conversationText.includes("seo") || 
+            conversationText.includes("search engine") || 
+            conversationText.includes("ranking")) {
+          domainFocus = "seo";
+        } else if (conversationText.includes("content") || 
+                 conversationText.includes("writing") || 
+                 conversationText.includes("blog")) {
+          domainFocus = "content";
+        } else if (conversationText.includes("design") || 
+                 conversationText.includes("experience") || 
+                 conversationText.includes("ux") ||
+                 conversationText.includes("ui")) {
+          domainFocus = "ux";
+        }
+        
+        console.log(`Analyzing website ${uniqueUrls[0]} with focus on ${domainFocus}`);
+        const analysisResult = await analyzeWebsiteForTasks(uniqueUrls[0], domainFocus);
+      
+        if (analysisResult.success) {
+          storeWebsiteData(sessionId, analysisResult);
+          console.log(`Website analysis stored for session ${sessionId}`);
+          
+          // Add a message to the conversation with analysis summary
+          const summarySections = analysisResult.analysisPrompt.split('\n\n');
+          const summaryText = summarySections.slice(0, 3).join('\n\n');
+          
+          addMessage(sessionId, { 
+            role: "system", 
+            content: `I've analyzed the website ${uniqueUrls[0]}. Here's what I found:\n\n${summaryText}`
+          });
+        }
+      } catch (error) {
+        console.error(`Error analyzing website:`, error);
+        }
+    }
+  }
+  
+  // Check if tasks were already generated and user is asking for edits
+  if (hasGeneratedTasks(sessionId) && isTaskEditRequested(sessionId)) {
+    return await handleTaskEditing(sessionId, messages);
+  }
   
   // Check if tasks were already generated in a previous exchange
   if (hasGeneratedTasks(sessionId)) {
     const lastUserMessage = userMessages[userMessages.length - 1]?.content?.toLowerCase() || "";
     
-    // Check if user is asking for task modification
-    const isAskingForTaskChange = 
-      lastUserMessage.includes("edit") || 
-      lastUserMessage.includes("change") ||
-      lastUserMessage.includes("modify") ||
-      lastUserMessage.includes("update") ||
-      lastUserMessage.includes("different") ||
-      lastUserMessage.includes("revise") ||
-      lastUserMessage.includes("adjust") ||
-      lastUserMessage.includes("create new task") ||
-      lastUserMessage.includes("generate new task") ||
-      lastUserMessage.includes("create task") ||
-      lastUserMessage.includes("new task") ||
-      lastUserMessage.includes("make new task") ||
-      lastUserMessage.includes("different task") ||
-      // Additional task creation scenarios
-      lastUserMessage.includes("new project") ||
-      lastUserMessage.includes("need tasks for") ||
-      lastUserMessage.includes("help me with") ||
-      lastUserMessage.includes("start over") ||
-      lastUserMessage.includes("restart") ||
-      lastUserMessage.includes("tasks about") ||
-      lastUserMessage.includes("tasks related to") ||
-      lastUserMessage.includes("plan for") ||
-      lastUserMessage.includes("help organize") ||
-      lastUserMessage.includes("i want to") ||
-      lastUserMessage.includes("different topic") ||
-      lastUserMessage.includes("new topic") ||
-      lastUserMessage.includes("instead") ||
-      lastUserMessage.includes("forget that") ||
-      lastUserMessage.includes("try something else") ||
-      lastUserMessage.includes("brainstorm tasks") ||
-      lastUserMessage.includes("create a plan") ||
-      lastUserMessage.includes("generate a plan") ||
-      lastUserMessage.includes("suggest tasks") ||
-      lastUserMessage.includes("another set") ||
-      lastUserMessage.includes("different set") ||
-      // Direct questions that likely need new tasks
-      /can you (help|make|create|give|provide)/.test(lastUserMessage) ||
-      /how (can|do|should) i/.test(lastUserMessage) ||
-      /what (should|can) i do/.test(lastUserMessage);
-      
-    if (isAskingForTaskChange) {
-      // Process this as a request to generate new tasks based on feedback
-      const modificationNote = {
+    // Check if user is asking for entirely new tasks with key phrases
+    const newTaskPhrases = [
+      "new project", "different tasks", "new topic", 
+      "start over", "restart", "another set", "different set",
+      "try something else", "instead", "forget that"
+    ];
+    
+    const isAskingForNewTasks = newTaskPhrases.some(phrase => 
+      lastUserMessage.includes(phrase)
+    );
+    
+    if (isAskingForNewTasks) {
+      // Clear task generation flag to regenerate tasks
+        resetQuestionCount(sessionId);
+      clearTaskEditRequest(sessionId);
+      // But continue with the existing messages for context
+    } else {
+      // Just continue the conversation normally
+      const continuationMessage = {
         role: "system",
-        content: "The user has requested changes to the previously generated tasks. Generate new tasks incorporating their feedback while maintaining the same format and detail level. Your response must be a valid JSON object with a 'tasks' array containing the modified tasks."
+        content: "The user has already received tasks from you. Continue the conversation by helping them implement the tasks or addressing any questions they have. Only generate new tasks if explicitly requested."
       };
-      
-      // We'll bypass the questioning phase and go straight to task generation
-      const messagesWithFormat = [...messages, modificationNote];
-      
-      const chatCompletion = await openai.chat.completions.create({
-        model: "gpt-4o-mini",
-        messages: messagesWithFormat,
-        response_format: { type: "json_object" }
-      });
-      
-      const responseMessage = chatCompletion.choices[0].message;
-      let content = responseMessage.content?.trim() || "{}";
       
       try {
-        const parsedData = JSON.parse(content);
-
-        let tasksList = [];
-
-        if (Array.isArray(parsedData)) {
-          tasksList = parsedData;
-        }
-        else if (parsedData.tasks && Array.isArray(parsedData.tasks)) {
-          tasksList = parsedData.tasks;
-        }
-        else if (parsedData.title && parsedData.description && parsedData.timeEstimate) {
-          tasksList = [parsedData];
-        }
-
-        if (tasksList.length === 0 && parsedData.reply) {
-          console.log("No tasks found in tasks array, checking reply for task content");
-          const extractedTasks = extractTasksFromReply(parsedData.reply);
-
-          if (extractedTasks && extractedTasks.length > 0) {
-            console.log(`Found ${extractedTasks.length} tasks in the reply text`);
-            tasksList = extractedTasks;
-          }
-        }
-
-        if (tasksList.length === 0) {
-          console.warn("No tasks found in response, using fallbacks");
-          tasksList = getFallbackTasksByType(taskType);
-        }
-
-        const validatedTasks = tasksList.map(task => ({
-          title: task.title || "Untitled Task",
-          description: task.description || "No description provided",
-          timeEstimate: task.timeEstimate || "1 hour"
-        })).slice(0, 3);
-
-        while (validatedTasks.length < 3) {
-          validatedTasks.push(getFallbackTasksByType(taskType)[validatedTasks.length - 1]);
-        }
-
-        if (detectQuestionsInTasks(validatedTasks)) {
-          console.log("Tasks appear to be questions, converting to reply format");
-          const questionsAsReply = convertTasksToReply(validatedTasks);
-          await cleanScrapedDataDirectory();
-          return { tasks: [], reply: questionsAsReply };
-        }
-
-        // Mark that we've generated tasks for this session
-        markTasksGenerated(sessionId);
-        
-        // Reset question counter for next conversation
-        resetQuestionCount(sessionId);
-        
-        await cleanScrapedDataDirectory();
-        return { 
-          tasks: validatedTasks, 
-          reply: "I've updated the tasks based on your feedback. Do these align better with what you were looking for?" 
-        };
-      } catch (error) {
-        console.error("Error updating tasks:", error);
-        await cleanScrapedDataDirectory();
-        return { 
-          tasks: getFallbackTasksByType(taskType), 
-          reply: "I had trouble updating the tasks. Would you like to give me more specific guidance on what changes you'd like to see?" 
-        };
-      }
-    } else {
-      // Just continue the conversation normally if they're not asking for task changes
-      const postTaskGuidance = {
-        role: "system",
-        content: "The user has already received tasks from you. Continue the conversation by helping them implement the tasks or addressing any questions they have. Don't generate new tasks unless they specifically ask for revisions."
-      };
-      
       const chatCompletion = await openai.chat.completions.create({
         model: "gpt-4o-mini",
-        messages: [...messages, postTaskGuidance]
+          messages: [...messages, continuationMessage]
       });
       
       const content = chatCompletion.choices[0].message.content || "";
       addMessage(sessionId, { role: "assistant", content });
       
+        await cleanScrapedDataDirectory();
       return { reply: content, tasks: [] };
+        } catch (error) {
+        console.error("Error in continuation response:", error);
+        await cleanScrapedDataDirectory();
+        return { 
+          reply: "I'm sorry, I had trouble processing that. How can I help you with your current tasks?", 
+          tasks: [] 
+        };
+      }
     }
   }
   
   // Check if we have enough context to generate tasks
   if (!isReadyForTasks(sessionId)) {
-    // We're still in the questioning/clarifying phase
-    
-    // Check if this is a domain-specific query that could benefit from web search
-    let additionalInfo = "";
-    if (taskType === "website") {
-      const urlPattern = /(https?:\/\/[^\s]+)/g;
-      const mentionedUrls = [];
-      
-      userMessages.forEach(msg => {
-        const matches = msg.content.match(urlPattern);
-        if (matches) {
-          mentionedUrls.push(...matches);
-        }
-      });
-      
-      const uniqueUrls = [...new Set(mentionedUrls)];
-      
-      if (uniqueUrls.length > 0) {
-        try {
-          // Use our new function for richer insights
-          const websiteInsights = await extractWebsiteInsights(uniqueUrls[0]);
-          if (websiteInsights && websiteInsights.success) {
-            const insights = websiteInsights.insights;
-            additionalInfo = `\nWebsite Analysis Results:
-- Title: ${insights.general.title || 'Not found'}
-- Description: ${insights.general.description || 'Not found'}
-- Content: ${insights.contentQuality.wordCount || 0} words, ${insights.contentQuality.headingStructure || 'No data'} 
-- User Experience: ${insights.userExperience.hasViewportMeta ? 'Mobile responsive' : 'May not be mobile responsive'}, ${insights.userExperience.imagesWithAlt || 0} images with alt text
-- Technical: ${insights.technicalAspects.scriptCount || 0} scripts, ${insights.technicalAspects.stylesheetCount || 0} stylesheets`;
-          }
-        } catch (error) {
-          console.error("Error in website analysis:", error);
-        }
-      }
-    }
-
-    const messagesForGPT = additionalInfo
-      ? [...messages, { role: "system", content: additionalInfo }]
-      : messages;
-
-    // Modified question guidance to force asking questions (but limit them)
+    // We're still gathering information with questions
     const questionGuidance = {
       role: "system",
-      content: "The user is seeking help with task creation. Ask 1-2 specific, focused questions to understand their needs better. Keep your questions concise. Focus on: 1) Their specific goals and challenges, 2) Their current resources or constraints. After you have this basic information, you should be ready to provide tasks. Don't ask more than 2-3 questions total."
+      content: "The user is seeking help with task creation. Ask 1-2 specific, focused questions to understand their needs better. Keep your questions concise. Focus on: 1) Their specific goals and challenges, 2) Their current resources or constraints. If the user's message already contains sufficient context, you may proceed to task creation without asking questions."
     };
-
+    
+    // Check if we should include website data in the prompt
+    const websiteData = getWebsiteData(sessionId);
+    if (websiteData) {
+      questionGuidance.content += `\n\nYou have access to website analysis data. Ask about specific areas you can help with based on this analysis.`;
+    }
+    
+    try {
     const chatCompletion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
-      messages: [...messagesForGPT, questionGuidance],
+        messages: [...messages, questionGuidance],
       tools: [
         {
           type: "function",
@@ -711,6 +549,7 @@ async function processMessage(sessionId) {
     const responseMessage = chatCompletion.choices[0].message;
 
     if (responseMessage.tool_calls?.[0]) {
+        // Handle web search
       const toolCall = responseMessage.tool_calls[0];
 
       try {
@@ -752,19 +591,21 @@ async function processMessage(sessionId) {
           model: "gpt-4o-mini",
           messages: [...getMessages(sessionId), {
             role: "system",
-            content: "Ask just one focused question to understand the user's needs. Don't ask more than 2-3 questions in total during the conversation before providing tasks."
+              content: "Ask one concise question to understand user needs or proceed to task creation if you have enough information."
           }]
         });
 
         const finalAnswer = secondResponse.choices[0].message.content || "";
-
         addMessage(sessionId, { role: "assistant", content: finalAnswer });
 
+          await cleanScrapedDataDirectory();
         return { reply: finalAnswer, tasks: [] };
       } catch (error) {
         console.error("Error handling tool call:", error);
         const errorMessage = "I'm having trouble accessing search results right now. Let me help based on what I already know.";
         addMessage(sessionId, { role: "assistant", content: errorMessage });
+          
+          await cleanScrapedDataDirectory();
         return { reply: errorMessage, tasks: [] };
       }
     }
@@ -775,180 +616,52 @@ async function processMessage(sessionId) {
       content: content
     });
 
+      await cleanScrapedDataDirectory();
     return { reply: content, tasks: [] };
+    } catch (error) {
+      console.error("Error in question phase:", error);
+      const errorMessage = "I'm having a little trouble processing that. Could you tell me more about what you're looking to accomplish?";
+      addMessage(sessionId, { role: "assistant", content: errorMessage });
+      
+      await cleanScrapedDataDirectory();
+      return { reply: errorMessage, tasks: [] };
+    }
   }
   
-  // Task generation code should be added back here
   // We have enough context to generate tasks
-  let researchResults = "";
-  let domainSpecificData = null;
+  return await generateTasks(sessionId, messages);
+}
 
-  // For website-specific tasks, use domain-specific analysis
-  if (taskType === "website") {
-    // Get URLs from the conversation for website-specific analysis
-    const urlPattern = /(https?:\/\/[^\s]+)/g;
-    const mentionedUrls = [];
-    
-    userMessages.forEach(msg => {
-      const matches = msg.content.match(urlPattern);
-      if (matches) {
-        mentionedUrls.push(...matches);
-      }
-    });
-    
-    const uniqueUrls = [...new Set(mentionedUrls)];
-    
-    if (uniqueUrls.length > 0) {
-      try {
-        // Determine the focus area based on conversation keywords
-        let domainFocus = "general";
-        const conversationText = userMessages.map(msg => msg.content.toLowerCase()).join(" ");
-        
-        if (conversationText.includes("seo") || 
-            conversationText.includes("search engine") || 
-            conversationText.includes("ranking")) {
-          domainFocus = "seo";
-        } else if (conversationText.includes("content") || 
-                   conversationText.includes("writing") || 
-                   conversationText.includes("blog")) {
-          domainFocus = "content";
-        } else if (conversationText.includes("design") || 
-                   conversationText.includes("experience") || 
-                   conversationText.includes("ux") ||
-                   conversationText.includes("ui")) {
-          domainFocus = "ux";
-        }
-        
-        const analysisResult = await analyzeWebsiteForTasks(uniqueUrls[0], domainFocus);
-        if (analysisResult.success) {
-          // We'll use this specialized analysis prompt later with GPT
-          domainSpecificData = analysisResult.analysisPrompt;
-          researchResults = `Based on analysis of ${uniqueUrls[0]}, I've gathered information specific to ${domainFocus} aspects of the website.`;
-        }
-      } catch (error) {
-        console.error(`Error in website analysis for tasks:`, error);
-      }
-    }
-    
-    // If we couldn't get website-specific data, fall back to general web search
-    if (!domainSpecificData) {
-      const userTopics = userMessages.map(msg => msg.content).join(" ");
-      try {
-        researchResults = await webSearch(`best practices for ${taskType} websites ${userTopics}`);
-      } catch (error) {
-        console.error(`Error in ${taskType} research:`, error);
-        researchResults = `I'll provide recommendations based on best practices for ${taskType}.`;
-      }
-    }
-  }
-  // For non-website tasks, use general web search for the specific domain
-  else if (taskType && taskType !== "general") {
-    const userTopics = userMessages.map(msg => msg.content).join(" ");
-    try {
-      researchResults = await webSearch(`best practices for ${taskType} ${userTopics}`);
-    } catch (error) {
-      console.error(`Error in ${taskType} research:`, error);
-      researchResults = `I'll provide recommendations based on best practices for ${taskType}.`;
-    }
-  }
-
-  const messagesWithFormat = [...messages];
-
-  if (researchResults) {
-    messagesWithFormat.push({
+// Function to handle task editing requests
+async function handleTaskEditing(sessionId, messages) {
+  // Get the specific task to edit (if any)
+  const specificTaskIndex = getSpecificTaskToEdit(sessionId);
+  
+  // Prepare guidance for the model
+  let editingGuidance;
+  
+  if (specificTaskIndex !== null) {
+    editingGuidance = {
       role: "system",
-      content: `Research results to help formulate your tasks: ${researchResults}`
-    });
-  }
-
-  // If we have domain-specific data from website analysis, use that
-  if (domainSpecificData) {
-    messagesWithFormat.push({
-      role: "system",
-      content: domainSpecificData + "\n\nProvide your response in JSON format."
-    });
+      content: `The user wants to edit Task ${specificTaskIndex + 1}. Keep the other tasks unchanged. Generate an updated version of all three tasks, where only Task ${specificTaskIndex + 1} should be modified based on the user's feedback. Return all tasks in JSON format.`
+    };
   } else {
-    messagesWithFormat.push({
+    editingGuidance = {
       role: "system",
-      content: "You are an AI assistant specializing in task creation for any domain. Your goal is to help users break down complex goals into actionable tasks. Follow this process:\n\n1) If the user's request is clear and specific enough to generate tasks (contains a goal, problem, or specific need), generate EXACTLY 3 specific, actionable tasks immediately.\n\n2) If the request is too vague or missing critical information, ask ONLY ONE clarifying question to get the essential information needed for task generation.\n\n3) Each task must include:\n   - A clear, specific title describing what needs to be done\n   - A detailed description with step-by-step instructions\n   - A realistic time estimate\n\n4) Return tasks in this exact JSON format:\n{\n  \"tasks\": [\n    {\n      \"title\": \"Task Title\",\n      \"description\": \"Step-by-step description\",\n      \"timeEstimate\": \"X hours\"\n    }\n  ]\n}\n\nDO NOT include any explanatory text outside the JSON structure. DO NOT use markdown formatting. DO NOT ask multiple questions - if you need clarification, ask only ONE essential question."
-    });
+      content: "The user wants to edit the previously generated tasks. Generate updated versions of these tasks incorporating their feedback. Return tasks in JSON format."
+    };
   }
-
-  // Create generic fallback tasks based on the task type
-  const fallbackTasks = getFallbackTasksByType(taskType);
-
+  
   try {
-    const chatPromise = openai.chat.completions.create({
+    const chatCompletion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
-      messages: [...messagesWithFormat, {
-        role: "system",
-        content: "Generate EXACTLY 3 specific, actionable tasks based on the user's request. Each task must:\n\n1. Have a clear title that describes a specific action\n2. Include a detailed, step-by-step description\n3. Include a realistic time estimate\n\nReturn ONLY a JSON object with this exact structure:\n{\n  \"tasks\": [\n    {\n      \"title\": \"Task Title\",\n      \"description\": \"Step-by-step description\",\n      \"timeEstimate\": \"X hours\"\n    },\n    {\n      \"title\": \"Task Title\",\n      \"description\": \"Step-by-step description\",\n      \"timeEstimate\": \"X hours\"\n    },\n    {\n      \"title\": \"Task Title\",\n      \"description\": \"Step-by-step description\",\n      \"timeEstimate\": \"X hours\"\n    }\n  ]\n}\n\nDO NOT include any text outside the JSON structure. DO NOT use markdown formatting. DO NOT include explanations or conversational text."
-      }],
+      messages: [...messages, editingGuidance],
       response_format: { type: "json_object" }
     });
-
-    const timeoutPromise = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error("Request timed out")), 15000)
-    );
-
-    const chatCompletion = await Promise.race([chatPromise, timeoutPromise]);
-
+    
     const responseMessage = chatCompletion.choices[0].message;
     let content = responseMessage.content?.trim() || "{}";
-
-    // Validate and clean the response
-    try {
-      // Remove any markdown formatting
-      content = content.replace(/\*\*/g, '')
-                      .replace(/#{1,3}\s*/g, '')
-                      .replace(/```json|```/g, '')
-                      .trim();
-
-      // Parse the JSON
-      const parsedData = JSON.parse(content);
-
-      // Validate the structure
-      if (!parsedData.tasks || !Array.isArray(parsedData.tasks)) {
-        throw new Error("Invalid task structure");
-      }
-
-      // Clean and validate each task
-      parsedData.tasks = parsedData.tasks.map(task => {
-        if (!task.title || !task.description || !task.timeEstimate) {
-          throw new Error("Missing required task fields");
-        }
-        return {
-          title: task.title.replace(/\*\*/g, '').trim(),
-          description: task.description.replace(/\*\*/g, '').trim(),
-          timeEstimate: task.timeEstimate.replace(/\*\*/g, '').trim()
-        };
-      });
-
-      // Ensure we have exactly 3 tasks
-      if (parsedData.tasks.length !== 3) {
-        throw new Error("Must have exactly 3 tasks");
-      }
-
-      content = JSON.stringify(parsedData);
-    } catch (error) {
-      console.error("Error validating response:", error);
-      // Return a fallback response with proper structure
-      content = JSON.stringify({
-        tasks: [
-          {
-            title: "Error in task generation",
-            description: "Please try again with a more specific request.",
-            timeEstimate: "0 hours"
-          }
-        ]
-      });
-    }
-
-    addMessage(sessionId, {
-      role: "assistant",
-      content: content
-    });
-
+    
     try {
       const parsedData = JSON.parse(content);
 
@@ -976,7 +689,7 @@ async function processMessage(sessionId) {
 
       if (tasksList.length === 0) {
         console.warn("No tasks found in response, using fallbacks");
-        tasksList = fallbackTasks;
+        tasksList = getFallbackTasksByType(getTaskType(sessionId));
       }
 
       const validatedTasks = tasksList.map(task => ({
@@ -986,9 +699,122 @@ async function processMessage(sessionId) {
       })).slice(0, 3);
 
       while (validatedTasks.length < 3) {
-        validatedTasks.push(fallbackTasks[validatedTasks.length - 1]);
+        validatedTasks.push(getFallbackTasksByType(getTaskType(sessionId))[validatedTasks.length - 1]);
+    }
+    
+      // Clear the task edit request flag
+      clearTaskEditRequest(sessionId);
+      
+      let replyMessage;
+      if (specificTaskIndex !== null) {
+        replyMessage = `I've updated Task ${specificTaskIndex + 1} as requested. Would you like to make any other changes?`;
+      } else {
+        replyMessage = "I've updated the tasks based on your feedback. How do these look now?";
+      }
+      
+      await cleanScrapedDataDirectory();
+      return { 
+        tasks: validatedTasks,
+        reply: replyMessage
+      };
+      } catch (error) {
+      console.error("Error parsing edited tasks:", error);
+      clearTaskEditRequest(sessionId);
+      
+      await cleanScrapedDataDirectory();
+      return { 
+        tasks: getFallbackTasksByType(getTaskType(sessionId)),
+        reply: "I had trouble updating the tasks. Here are some suggestions instead."
+      };
+    }
+    } catch (error) {
+    console.error("Error editing tasks:", error);
+    clearTaskEditRequest(sessionId);
+    
+    await cleanScrapedDataDirectory();
+    return { 
+      tasks: getFallbackTasksByType(getTaskType(sessionId)),
+      reply: "I encountered an error while trying to update the tasks. Here are some alternatives."
+    };
+  }
+}
+
+// Function to generate tasks based on conversation context
+async function generateTasks(sessionId, messages) {
+  const taskType = getTaskType(sessionId);
+  
+  // Create task generation prompt
+  const websiteData = getWebsiteData(sessionId);
+  let taskGenerationPrompt;
+  
+  if (websiteData && websiteData.analysisPrompt) {
+    // Use website-specific data for task generation
+    taskGenerationPrompt = {
+      role: "system",
+      content: websiteData.analysisPrompt + "\n\nGenerate EXACTLY 3 specific, actionable tasks to address the issues identified in the analysis. Each task must have a clear title, detailed step-by-step description, and realistic time estimate."
+    };
+  } else {
+    // Use generic task generation prompt
+    taskGenerationPrompt = {
+      role: "system",
+      content: "Generate EXACTLY 3 specific, actionable tasks based on the user's request. Each task must:\n\n1. Have a clear title that describes a specific action\n2. Include a detailed, step-by-step description\n3. Include a realistic time estimate\n\nReturn ONLY a JSON object with tasks array."
+    };
+  }
+
+  try {
+    const chatCompletion = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [...messages, taskGenerationPrompt],
+      response_format: { type: "json_object" }
+    });
+
+    const responseMessage = chatCompletion.choices[0].message;
+    let content = responseMessage.content?.trim() || "{}";
+
+    // Parse and validate the response
+    try {
+      const parsedData = JSON.parse(content);
+
+      let tasksList = [];
+
+      if (Array.isArray(parsedData)) {
+        tasksList = parsedData;
+      }
+      else if (parsedData.tasks && Array.isArray(parsedData.tasks)) {
+        tasksList = parsedData.tasks;
+      }
+      else if (parsedData.title && parsedData.description && parsedData.timeEstimate) {
+        tasksList = [parsedData];
       }
 
+      // Extract tasks from reply text if no tasks array found
+      if (tasksList.length === 0 && parsedData.reply) {
+        console.log("No tasks found in tasks array, checking reply for task content");
+        const extractedTasks = extractTasksFromReply(parsedData.reply);
+
+        if (extractedTasks && extractedTasks.length > 0) {
+          console.log(`Found ${extractedTasks.length} tasks in the reply text`);
+          tasksList = extractedTasks;
+        }
+      }
+
+      // Use fallbacks if no tasks found
+      if (tasksList.length === 0) {
+        console.warn("No tasks found in response, using fallbacks");
+        tasksList = getFallbackTasksByType(taskType);
+      }
+
+      const validatedTasks = tasksList.map(task => ({
+        title: task.title || "Untitled Task",
+        description: task.description || "No description provided",
+        timeEstimate: task.timeEstimate || "1 hour"
+      })).slice(0, 3);
+
+      while (validatedTasks.length < 3) {
+        validatedTasks.push(getFallbackTasksByType(taskType)[validatedTasks.length - 1]);
+      }
+
+      // Check if tasks are actually questions rather than tasks
       if (detectQuestionsInTasks(validatedTasks)) {
         console.log("Tasks appear to be questions, converting to reply format");
         const questionsAsReply = convertTasksToReply(validatedTasks);
@@ -1002,21 +828,31 @@ async function processMessage(sessionId) {
       // Reset question counter for next conversation
       resetQuestionCount(sessionId);
       
+      addMessage(sessionId, {
+        role: "assistant",
+        content: `Generated ${validatedTasks.length} tasks for ${taskType} focus.`
+      });
+      
       await cleanScrapedDataDirectory();
       return { 
         tasks: validatedTasks, 
         reply: "Here are some tasks based on our conversation. Would you like to make any adjustments to these tasks?" 
       };
-
     } catch (error) {
-      console.error("Error parsing tasks JSON:", error);
+      console.error("Error parsing tasks:", error);
       await cleanScrapedDataDirectory();
-      return { tasks: fallbackTasks, reply: "Here are some suggested tasks. Would you like me to adjust these based on any additional information?" };
+      return { 
+        tasks: getFallbackTasksByType(taskType), 
+        reply: "I had some trouble generating custom tasks. Here are some suggestions to get you started." 
+      };
     }
   } catch (error) {
-    console.error("Error generating or parsing tasks:", error);
+    console.error("Error generating tasks:", error);
     await cleanScrapedDataDirectory();
-    return { tasks: fallbackTasks, reply: "Here are some suggested tasks. Would you like me to adjust these based on any additional information?" };
+    return { 
+      tasks: getFallbackTasksByType(taskType), 
+      reply: "I encountered an error while generating tasks. Here are some general suggestions instead." 
+    };
   }
 }
 
@@ -1216,8 +1052,6 @@ async function ensureTasksInTasksArray(response) {
       response.reply = "I've generated the following tasks based on our conversation. Would you like me to explain any of them in more detail?";
       
       console.log("Successfully moved tasks from reply to tasks array");
-      // Clean up scraped_data directory after processing
-      await cleanScrapedDataDirectory();
     }
   }
   
