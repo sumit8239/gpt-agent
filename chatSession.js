@@ -17,7 +17,8 @@ export function getSession(sessionId) {
       tasksGenerated: false, // Flag to indicate if tasks have been generated
       taskEditRequested: false, // Flag to indicate if user requested to edit tasks
       websiteData: null, // Will store website analysis data if relevant
-      specificTaskEditing: null // Will store which specific task to edit (index)
+      specificTaskEditing: null, // Will store which specific task to edit (index)
+      generatedTasks: [] // Will store the actual generated tasks directly
     });
   }
   return sessions.get(sessionId);
@@ -82,20 +83,24 @@ export function addMessage(sessionId, message) {
     // Check for task editing requests
     const editTaskTriggers = [
       "edit task", "modify task", "change task", 
-      "update task", "revise task", "fix task"
+      "update task", "revise task", "fix task",
+      "edit", "update", "change", "modify"
     ];
     
+    // Check if a specific task number is mentioned directly
+    const taskNumberMatch = content.match(/\b(task\s*)?([1-3])\b/i);
+    if (taskNumberMatch) {
+      const taskNum = parseInt(taskNumberMatch[2], 10);
+      if (taskNum > 0 && taskNum <= 3) {
+        console.log(`Found task number in message: ${taskNum}`);
+        session.specificTaskEditing = taskNum - 1; // Convert to 0-indexed
+        session.taskEditRequested = true;
+      }
+    }
+    
+    // Check for edit keywords
     if (editTaskTriggers.some(trigger => content.includes(trigger))) {
       session.taskEditRequested = true;
-      
-      // Check if a specific task number is mentioned
-      const taskNumberMatch = content.match(/task\s*(\d+)|(\d+)(st|nd|rd|th)\s*task/i);
-      if (taskNumberMatch) {
-        const taskNum = parseInt(taskNumberMatch[1] || taskNumberMatch[2], 10);
-        if (taskNum > 0 && taskNum <= 3) {
-          session.specificTaskEditing = taskNum - 1; // Convert to 0-indexed
-        }
-      }
     }
   }
   
@@ -167,11 +172,24 @@ export function getSpecificTaskToEdit(sessionId) {
   return getSession(sessionId).specificTaskEditing;
 }
 
-// Mark task edit request as handled
-export function clearTaskEditRequest(sessionId) {
+// Set specific task to edit by index
+export function setSpecificTaskToEdit(sessionId, taskIndex) {
   const session = getSession(sessionId);
-  session.taskEditRequested = false;
-  session.specificTaskEditing = null;
+  // Task index should be 0, 1, or 2 (for tasks 1, 2, 3)
+  if (taskIndex >= 0 && taskIndex <= 2) {
+    session.specificTaskEditing = taskIndex;
+    return true;
+  }
+  return false;
+}
+
+// Mark task edit request as handled
+export function clearTaskEditRequest(sessionId, setFlag = false) {
+  const session = getSession(sessionId);
+  session.taskEditRequested = setFlag;
+  if (!setFlag) {
+    session.specificTaskEditing = null;
+  }
 }
 
 // Store website analysis data
@@ -193,4 +211,16 @@ export function resetQuestionCount(sessionId) {
 // Clear a session
 export function clearSession(sessionId) {
   sessions.delete(sessionId);
+}
+
+// Store generated tasks directly
+export function storeGeneratedTasks(sessionId, tasks) {
+  const session = getSession(sessionId);
+  session.generatedTasks = tasks;
+}
+
+// Get stored tasks
+export function getStoredTasks(sessionId) {
+  const session = getSession(sessionId);
+  return session.generatedTasks || [];
 } 
